@@ -1,5 +1,6 @@
 [package]
-name = "accesstuner_logger"
+name = "maf_cal"
+description = "A tool to calibrate a Mass Airflow sensor"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
