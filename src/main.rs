@@ -1,95 +1,136 @@
-use std::fs;
+// Import necessary modules and libraries
+mod data;
+mod csv_out;
 
-fn main() {
-    let log = fs::read_to_string("./data/log1.csv")
-        .expect("Should be able to read log file");
-    let headerindex = log.find("\r\n");
-    
-    let headers:&str = match headerindex {
-        Some(index) => &log[0..index],
-        None => panic!("Cannot read headers row!"),
-    };
-    
-    let column_headers: Vec<String> = headers.split(',').map(|s| s.to_string()).collect();
-    let mut mafvindex: Option<usize> = None;
-    let mut massindex: Option<usize> = None;
-    let mut shortindex: Option<usize> = None;
-    let mut longindex: Option<usize> = None;
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io::{self, BufRead, BufReader},
+};
+use data::{F32, LogData, LogField};
+use csv_out::write_to_csv;
 
-    for (i, e) in column_headers.into_iter().enumerate() {
-        match e.as_str() {
-            "MAF Voltage (V)" => {
-                mafvindex = Some(i);
-            }
-            "Mass Airflow (g/s)" => {
-                massindex = Some(i);
-            }
-            "Short Term FT (%)" => {
-                shortindex = Some(i);
-            }
-            "Long Term FT (%)" => {
-                longindex = Some(i);
-            }
+/// Main function responsible for processing the OBD2 CSV log, 
+/// extracting relevant data, performing curve fitting, and exporting 
+/// the pre-corrected and post-corrected data to separate CSV files.
+fn main() -> io::Result<()> {
+    // Open and read the CSV file
+    let log = fs::File::open("./data/log1.csv").map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            io::Error::new(e.kind(), "CSV log file not found. Ensure the path is correct and the file exists.")
+        } else {
+            e
+        }
+    })?;
+    
+    let reader = BufReader::new(log);
+    let mut lines = reader.lines();
+
+    // Extract the headers from the first line of the CSV
+    let headers_line = lines.next().unwrap()?;
+    let headers: Vec<&str> = headers_line.split(',').collect();
+
+    // Map headers to their respective column indices
+    let mut indices = HashMap::new();
+    for (i, header) in headers.iter().enumerate() {
+        match *header {
+            "MAF Voltage (V)" => { indices.insert("MAFV", i); },
+            "Mass Airflow (g/s)" => { indices.insert("MASS", i); },
+            "Short Term FT (%)" => { indices.insert("STFT", i); },
+            "Long Term FT (%)" => { indices.insert("LTFT", i); },
             _ => {}
         }
     }
 
-    if mafvindex.is_some() && massindex.is_some() && shortindex.is_some() && longindex.is_some() {
-        println!("All matches were successful!");
-        println!("MAF V index: {:?}", mafvindex.unwrap());
-        println!("Mass A index: {:?}", massindex.unwrap());
-        println!("Short T index: {:?}", shortindex.unwrap());
-        println!("Long T index: {:?}", longindex.unwrap());
-    } else {
-        println!("The following matches were not successful:");
-        if mafvindex.is_none() {
-            println!("- MAF V");
-        }
-        if massindex.is_none() {
-            println!("- Mass A");
-        }
-        if shortindex.is_none() {
-            println!("- Short T");
-        }
-        if longindex.is_none() {
-            println!("- Long T");
+    // Ensure all required headers are found in the CSV
+    let required_headers: Vec<&str> = LogField::variants().iter().map(|variant| variant.to_header()).collect();
+    let missing_headers: Vec<&str> = required_headers.iter()
+        .filter(|&&key| !indices.contains_key(key))
+        .cloned()
+        .collect();
+
+    if !missing_headers.is_empty() {
+        let missing_list = missing_headers.join(", ");
+        panic!("The following headers were not found: {}", missing_list);
+    }
+
+    // Initialize the log data structure to hold extracted data from the CSV
+    let mut log_data = LogData::default();
+
+    // HashSet to ensure unique combinations of key and value are added to log_data
+    let mut seen = HashSet::new();
+
+    // Process each line in the CSV, extracting relevant data
+    for line in lines {
+        let line = line?;
+        let columns: Vec<&str> = line.split(',').collect();
+
+        for &key in required_headers.iter() {
+            if let Some(&index) = indices.get(key) {
+                if let Ok(value) = columns[index].parse::<f32>() {
+                    if let Some(field) = LogField::from_header(key) {
+                        log_data.push(field, value, &mut seen);
+                    }
+                }
+            }
         }
     }
 
-    let mut mafv_values: Vec<f32> = Vec::new();
-    let mut mass_values: Vec<f32> = Vec::new();
-    let mut short_values: Vec<f32> = Vec::new();
-    let mut long_values: Vec<f32> = Vec::new();
-    
-    for line in log.lines().skip(1) {
-        let columns: Vec<&str> = line.split(',').collect();
-    
-        // MAF V
-        if let Some(mafv_value) = columns.get(mafvindex.unwrap()) {
-            if let Ok(value) = mafv_value.parse::<f32>() {
-                mafv_values.push(value);
-            }
-        }
-    
-        // Mass A
-        if let Some(mass_value) = columns.get(massindex.unwrap()) {
-            if let Ok(value) = mass_value.parse::<f32>() {
-                mass_values.push(value);
-            }
-        }
-    
-        // Short T
-        if let Some(short_value) = columns.get(shortindex.unwrap()) {
-            if let Ok(value) = short_value.parse::<f32>() {
-                short_values.push(value);
-            }
-        }
-    
-        // Long T
-        if let Some(long_value) = columns.get(longindex.unwrap()) {
-            if let Ok(value) = long_value.parse::<f32>() {
-                long_values.push(value);
-            }
+
+    // Prepare for deduplication of X and Y values
+    let mut seen_xy = HashSet::new();
+    let mut deduplicated_x = Vec::new();
+    let mut deduplicated_y = Vec::new();
+
+    // Combine STFT and LTFT values to get combined fuel trim correction factor
+    let ft_combine: Vec<f32> = log_data.get(&LogField::STFT).unwrap().iter().zip(log_data.get(&LogField::LTFT).unwrap())
+    .map(|(&stft, &ltft)| stft + ltft)
+    .collect();
+
+    // Apply fuel trim correction factors to the MAF data
+    let maf_cor: Vec<f32> = ft_combine.iter().zip(log_data.get(&LogField::MASS).unwrap())
+    .map(|(&ft, &maf)| ft + maf)
+    .collect();
+
+    // Deduplicate X and Y values before curve fitting
+    for (x_val, y_val) in log_data.get(&LogField::MAFV).unwrap().iter().zip(maf_cor.iter()) {
+        let unique_key = (F32(*x_val), F32(*y_val));
+        if !seen_xy.contains(&unique_key) {
+            seen_xy.insert(unique_key);
+            deduplicated_x.push(*x_val);
+            deduplicated_y.push(*y_val);
         }
     }
+
+    // Export deduplicated data to "pre-correction.csv"
+    write_to_csv("pre-correction.csv", &deduplicated_x, &deduplicated_y)?;
+
+    // Placeholder for curve fitting logic
+    // let (a_opt, b_opt, c_opt) = curve_fit(&deduplicated_x, &deduplicated_y);
+
+    // Sample optimized parameters
+    let a_opt = 1.0;
+    let b_opt = 1.0;
+    let c_opt = 1.0;
+
+    // Calculate the corresponding y values using the sample optimized parameters
+    let y_fit: Vec<f32> = deduplicated_x.iter().map(|&x_val| a_opt * (-b_opt * x_val).exp() + c_opt).collect();
+
+    // Export fitted data to "post-correction.csv"
+    write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;
+    Ok(())
+}
+
+/// Performs curve fitting on the provided x_data and y_data.
+///
+/// # Arguments
+/// - x_data: A slice of f32 values representing the x data.
+/// - y_data: A slice of f32 values representing the y data.
+///
+/// # Returns
+/// A tuple containing three f32 values representing the optimized parameters for the curve.
+fn curve_fit(x_data: &[f32], y_data: &[f32]) -> (f32, f32, f32) {
+    // TODO: Implement the curve fitting logic here.
+    // For now, we'll just return dummy values.
+    (1.0, 1.0, 1.0)
 }
