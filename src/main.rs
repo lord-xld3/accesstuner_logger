@@ -10,9 +10,15 @@ use std::{
 use data::{F32, LogData, LogField};
 use csv_out::write_to_csv;
 
-/// Main function responsible for processing the OBD2 CSV log, 
-/// extracting relevant data, performing curve fitting, and exporting 
-/// the pre-corrected and post-corrected data to separate CSV files.
+/// Main function for the program.
+///
+/// This function processes the OBD2 CSV log by:
+/// 1. Reading the CSV file and extracting its headers.
+/// 2. Verifying that all required headers are present.
+/// 3. Parsing the CSV file line-by-line and extracting relevant data.
+/// 4. Combining and correcting the extracted data.
+/// 5. Deduplicating the X and Y values for curve fitting.
+/// 6. Exporting the pre-corrected and post-corrected data to separate CSV files.
 fn main() -> io::Result<()> {
     // Open and read the CSV file
     let log = fs::File::open("./data/log1.csv").map_err(|e| {
@@ -30,7 +36,7 @@ fn main() -> io::Result<()> {
     let headers_line = lines.next().unwrap()?;
     let headers: Vec<&str> = headers_line.split(',').collect();
 
-    // Map headers to their respective column indices
+    // Create a mapping from headers to their corresponding column indices
     let mut indices = HashMap::new();
     for (i, header) in headers.iter().enumerate() {
         match *header {
@@ -42,7 +48,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Ensure all required headers are found in the CSV
+    // Ensure all required headers (defined by LogField variants) are present in the CSV
     let required_headers: Vec<&str> = LogField::variants().iter().map(|variant| variant.to_header()).collect();
     let missing_headers: Vec<&str> = required_headers.iter()
         .filter(|&&key| !indices.contains_key(key))
@@ -54,13 +60,13 @@ fn main() -> io::Result<()> {
         panic!("The following headers were not found: {}", missing_list);
     }
 
-    // Initialize the log data structure to hold extracted data from the CSV
+    // Initialize a structure to hold the extracted log data
     let mut log_data = LogData::default();
 
-    // HashSet to ensure unique combinations of key and value are added to log_data
+    // Use a HashSet to ensure unique key-value combinations
     let mut seen = HashSet::new();
 
-    // Process each line in the CSV, extracting relevant data
+    // Process each line in the CSV, extracting and organizing relevant data
     for line in lines {
         let line = line?;
         let columns: Vec<&str> = line.split(',').collect();
@@ -76,23 +82,22 @@ fn main() -> io::Result<()> {
         }
     }
 
-
-    // Prepare for deduplication of X and Y values
+    // Deduplicate X and Y values in preparation for curve fitting
     let mut seen_xy = HashSet::new();
     let mut deduplicated_x = Vec::new();
     let mut deduplicated_y = Vec::new();
 
-    // Combine STFT and LTFT values to get combined fuel trim correction factor
+    // Combine STFT and LTFT values to compute the combined fuel trim correction factor
     let ft_combine: Vec<f32> = log_data.get(&LogField::STFT).unwrap().iter().zip(log_data.get(&LogField::LTFT).unwrap())
     .map(|(&stft, &ltft)| stft + ltft)
     .collect();
 
-    // Apply fuel trim correction factors to the MAF data
+    // Correct the MAF data using the combined fuel trim values
     let maf_cor: Vec<f32> = ft_combine.iter().zip(log_data.get(&LogField::MASS).unwrap())
     .map(|(&ft, &maf)| ft + maf)
     .collect();
 
-    // Deduplicate X and Y values before curve fitting
+    // Deduplicate data in preparation for curve fitting
     for (x_val, y_val) in log_data.get(&LogField::MAFV).unwrap().iter().zip(maf_cor.iter()) {
         let unique_key = (F32(*x_val), F32(*y_val));
         if !seen_xy.contains(&unique_key) {
@@ -102,35 +107,33 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Export deduplicated data to "pre-correction.csv"
+    // Export the deduplicated data for further analysis
     write_to_csv("pre-correction.csv", &deduplicated_x, &deduplicated_y)?;
 
-    // Placeholder for curve fitting logic
-    // let (a_opt, b_opt, c_opt) = curve_fit(&deduplicated_x, &deduplicated_y);
-
-    // Sample optimized parameters
+    // Placeholder logic for curve fitting - this will be replaced with actual curve fitting logic in future iterations
     let a_opt = 1.0;
     let b_opt = 1.0;
     let c_opt = 1.0;
 
-    // Calculate the corresponding y values using the sample optimized parameters
+    // Compute the Y values using the curve fitting parameters
     let y_fit: Vec<f32> = deduplicated_x.iter().map(|&x_val| a_opt * (-b_opt * x_val).exp() + c_opt).collect();
 
-    // Export fitted data to "post-correction.csv"
+    // Export the fitted data for comparison
     write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;
     Ok(())
 }
 
-/// Performs curve fitting on the provided x_data and y_data.
+/// A placeholder function for curve fitting.
 ///
 /// # Arguments
-/// - x_data: A slice of f32 values representing the x data.
-/// - y_data: A slice of f32 values representing the y data.
+/// * `x_data`: A slice of `f32` values representing the x data points.
+/// * `y_data`: A slice of `f32` values representing the y data points.
 ///
 /// # Returns
-/// A tuple containing three f32 values representing the optimized parameters for the curve.
+/// A tuple of three `f32` values representing the optimized parameters of the curve.
+///
+/// # Note
+/// This is a stub and needs to be implemented with actual curve fitting logic.
 fn curve_fit(x_data: &[f32], y_data: &[f32]) -> (f32, f32, f32) {
-    // TODO: Implement the curve fitting logic here.
-    // For now, we'll just return dummy values.
     (1.0, 1.0, 1.0)
 }
