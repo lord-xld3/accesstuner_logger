@@ -39,12 +39,8 @@ fn main() -> io::Result<()> {
     // Create a mapping from headers to their corresponding column indices
     let mut indices = HashMap::new();
     for (i, header) in headers.iter().enumerate() {
-        match *header {
-            "MAF Voltage (V)" => { indices.insert("MAFV", i); },
-            "Mass Airflow (g/s)" => { indices.insert("MASS", i); },
-            "Short Term FT (%)" => { indices.insert("STFT", i); },
-            "Long Term FT (%)" => { indices.insert("LTFT", i); },
-            _ => {}
+        if let Some(field) = LogField::from_header(header) {
+            indices.insert(field.to_header(), i);
         }
     }
 

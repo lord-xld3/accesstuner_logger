@@ -54,10 +54,10 @@ macro_rules! define_enum_and_variants {
 
 // Utilizing the macro to define the `LogField` enum.
 define_enum_and_variants!(LogField {
-    MAFV => "MAFV",
-    MASS => "MASS",
-    STFT => "STFT",
-    LTFT => "LTFT"
+    MAFV => "MAF Voltage (V)",
+    MASS => "Mass Airflow (g/s)",
+    STFT => "Short Term FT (%)",
+    LTFT => "Long Term FT (%)"
 });
 
 /// Represents the structured format for logging data with dynamic fields.
