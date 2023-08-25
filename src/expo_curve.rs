@@ -1,14 +1,29 @@
 use std::{
     io,
-    ops::Range,
+    env,
 };
 use wgpu::{
-    Buffer,
-    BufferAddress,
-    util::DeviceExt,
+    util::{DeviceExt, BufferInitDescriptor},
 };
+use bytemuck::{cast_slice, Pod, Zeroable};
+
+// Ensure Point and CurveParams are 'bytemuck' compatible
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct Point {
+    x: f32,
+    y: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct CurveParams {
+    a: f32,
+    b: f32,
+}
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
+    env::set_var("RUST_BACKTRACE", "1");
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         dx12_shader_compiler: Default::default(),
@@ -21,34 +36,55 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         })
         .await
         .unwrap();
-    let (device, queue) = adapter
-        .request_device(&Default::default(), None)
-        .await
-        .unwrap();
-    let x_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("X Data Buffer"),
-        contents: bytemuck::cast_slice(x_data),
+    let (device, queue) = adapter.request_device(
+        &wgpu::DeviceDescriptor {
+            features: wgpu::Features::SPIRV_SHADER_PASSTHROUGH,
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    // 1. Load the shader
+    // Load the precompiled SPIR-V binary
+    let cs_spirv = include_bytes!("shader.spv");
+
+    // Convert the SPIR-V binary for wgpu
+    let cs_data = wgpu::util::make_spirv_raw(cs_spirv);
+
+    // Create a shader module
+    let cs_module = unsafe {
+        device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+            label: Some("Compute Shader"),
+            source: cs_data,
+        })
+    };
+
+
+    let point_data: Vec<Point> = x_data.iter().zip(y_data).map(|(&x, &y)| Point { x, y }).collect();
+    let points_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("Points Buffer"),
+        contents: cast_slice(&point_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    // Create a buffer to copy the results to
+    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Result Buffer"),
+        size: (point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Output Buffer"),
+        size: (point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
     });
-    let y_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Y Data Buffer"),
-        contents: bytemuck::cast_slice(y_data),  // assuming y_data has the same type & structure as x_data
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-    let intermediate_values = [0.0f32, 0.0f32, 0.0f32]; // sum_a, sum_b, and error
-    let intermediate_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Intermediate Data Buffer"),
-        contents: bytemuck::cast_slice(&intermediate_values),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-    });
-    let initial_values = [1.0f32, 1.0f32];
-    let result_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Result Data Buffer"),
-        contents: bytemuck::cast_slice(&initial_values),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+
+    // Create a bind group layout and bind group
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Bind Group Layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -56,151 +92,110 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(4 * x_data.len() as u64),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Point>() as _),
                 },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(4 * y_data.len() as u64),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(4 * 3),  // 3 f32 values (a, b, c)
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
                 },
                 count: None,
             },
         ],
-    });
+        label: Some("bind_group_layout"),
+    });    
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Bind Group"),
         layout: &bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: x_data_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &points_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of_val(&point_data) as _),
+                }),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: y_data_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &output_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new((point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress),
+                }),
             },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: result_data_buffer.as_entire_binding(),
-            },
+            // ... Add other binding resources as needed ...
         ],
-    });
+        label: Some("bind_group"),
+    });    
 
-    let u32_size = std::mem::size_of::<u32>() as u32;
-    let output_buffer_size = (u32_size * 256 * 256) as u64; 
-    let output_buffer_desc = wgpu::BufferDescriptor {
-        size: output_buffer_size,
-        usage: wgpu::BufferUsages::COPY_DST
-            // this tells wpgu that we want to read this buffer from the cpu
-            | wgpu::BufferUsages::MAP_READ,
-        label: None,
-        mapped_at_creation: false,
-    };
-    let output_buffer = device.create_buffer(&output_buffer_desc);
-
-    let shader_src = include_str!("shader.wgsl");
-    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Exponential Fit Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-    });
-    let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Compute Pipeline Layout"),
         bind_group_layouts: &[&bind_group_layout],
         push_constant_ranges: &[],
     });
-    let aggregation_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Aggregation Pass Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &shader_module,
-        entry_point: "aggregation_pass",
-    });
-    let calculation_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Calculation Pass Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &shader_module,
-        entry_point: "calculation_pass",
-    });
-    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Compute Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &shader_module,
+        layout: Some(&pipeline_layout),
+        module: &cs_module,
         entry_point: "main",
     });
+    
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some("Compute Pass"),
-    });
-    const MAX_ITERATIONS: usize = 1000;
-    const ERROR_THRESHOLD: f32 = 0.01;
-    let mut fitted_y_data: Vec<f32> = Vec::new();
-    let mut mapped_buffer: wgpu::Buffer;
-    for _ in 0..MAX_ITERATIONS {
-        // Run the aggregation pass
-        compute_pass.set_pipeline(&aggregation_pipeline);
-        compute_pass.set_bind_group(0, &bind_group, &[]);
-        compute_pass.dispatch_workgroups(x_data.len() as u32, 1, 1);
-    
-        // Run the calculation pass
-        compute_pass.set_pipeline(&calculation_pipeline);
-        compute_pass.set_bind_group(0, &bind_group, &[]);
-        compute_pass.dispatch_workgroups(1, 1, 1);
-    
-        // Unmap the output buffer and read intermediate error to check for convergence
+    // Copy from the GPU output buffer to the result buffer
+    {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Compute Encoder"),
+        });
         {
-            let buffer_slice = output_buffer.slice(..);
-            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-                tx.send(result).unwrap();
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
             });
-            device.poll(wgpu::Maintain::Wait);
-            let mapped_buffer = rx.receive().await.unwrap().unwrap();
-            let data = mapped_buffer.get_mapped_range();
-            
-            // Extract the result data
-            let result_data = data; // Use the same variable to retrieve the mapped range
-            let (a, b): (f32, f32) = (*bytemuck::from_bytes(&result_data[0..4]), *bytemuck::from_bytes(&result_data[4..8]));
-            
-            let (a, b): (f32, f32) = (*bytemuck::from_bytes(&result_data[0..4]), *bytemuck::from_bytes(&result_data[4..8]));
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(point_data.len() as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output_buffer, 0, &result_buffer, 0, result_buffer.size());
+        queue.submit(Some(encoder.finish()));
+    }
+    
+    // Map the result buffer and read the results
+    let result_slice = result_buffer.slice(..);
 
-            // Calculate the error and check for convergence
-            let error_range: Range<BufferAddress> = (2 * std::mem::size_of::<f32>() as u64)..(3 * std::mem::size_of::<f32>() as u64);
-            let error_slice = intermediate_data_buffer.slice(error_range);
-            let error_data = error_slice.get_mapped_range();
-            let error: f32 = *bytemuck::from_bytes(&error_data[..]);
+    // Use a channel to wait for the buffer mapping to complete
+    let (tx, rx) = std::sync::mpsc::channel();
 
-            if error < ERROR_THRESHOLD {
-                break;
-            }
-
-            // Calculate fitted y data
-            let fitted_y_data: Vec<f32> = x_data.iter().map(|&x| a * (b * x).exp()).collect();
-            println!("Optimized parameters: a = {}, b = {}", a, b);
-
-            // Return the result here if converged
-            if error < ERROR_THRESHOLD {
-                return Ok(fitted_y_data);
+    result_slice.map_async(wgpu::MapMode::Read, move |result| {
+        match result {
+            Ok(()) => tx.send(Ok(())).unwrap(),
+            Err(e) => {
+                eprintln!("Buffer mapping error: {:?}", e);
+                tx.send(Err(e)).unwrap();
             }
         }
-        output_buffer.unmap();
+    });
 
-
+    // Wait for the buffer mapping to complete
+    let mapping_result = rx.recv().expect("Failed to receive buffer mapping result");
+    if let Err(e) = mapping_result {
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e)));
     }
-    // Return the result after the loop
-    Ok(fitted_y_data)
+
+    // Limit the scope of result_data
+    let result_vec = {
+        let result_data = result_slice.get_mapped_range();
+        let vec: Vec<CurveParams> = bytemuck::cast_slice(&result_data).to_vec();
+        vec
+    };
+
+    // Now that result_data is out of scope, unmap the buffer
+    result_buffer.unmap();
+
+    Ok(result_vec.iter().map(|params| params.a).collect())
+
 }

@@ -2,3 +2,4 @@
 Cargo.lock
 post-correction.csv
 pre-correction.csv
+*.spv
