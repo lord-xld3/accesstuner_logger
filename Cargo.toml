@@ -12,7 +12,7 @@ categories = ["command-line-utilities","visualization-"]
 
 [dependencies]
 csv = "1.2.2"
-wgpu = { version = "0.17"}
+wgpu = { version = "0.17", features = ["spirv"]}
 tokio = { version = "1", features = ["full"] }
 futures-intrusive = "0.4"
 bytemuck = { version = "1.13.1", features = ["derive"] }

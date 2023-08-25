@@ -174,13 +174,13 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
 
     // Use a channel to wait for the buffer mapping to complete
     println!("Waiting for buffer mapping");
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     result_slice.map_async(wgpu::MapMode::Read, move |result| {
         println!("Inside map_async callback");
         match result {
             Ok(()) => {
                 println!("Mapping successful");
-                tx.send(Ok(())).unwrap()
+                tx.send(result).unwrap();
             },
             Err(e) => {
                 eprintln!("Buffer mapping error: {:?}", e);
@@ -189,29 +189,21 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         }
     });
     device.poll(wgpu::Maintain::Wait);
+    rx.receive().await.unwrap().unwrap();
 
-    // Wait for the buffer mapping to complete
-    let mapping_result = rx.recv().expect("Failed to receive buffer mapping result");
-    if let Err(e) = mapping_result {
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e)));
-    }
+    let mapped_range = result_slice.get_mapped_range();
+    println!("Data: {:?}", mapped_range);
 
-    println!("Buffer mapping completed");
+    // Process the mapped data
+    let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
 
-
-    // Limit the scope of result_data
-    let result_vec = {
-        let result_data = result_slice.get_mapped_range();
-        let vec: Vec<CurveParams> = bytemuck::cast_slice(&result_data).to_vec();
-        vec
-    };
-
-    // Now that result_data is out of scope, unmap the buffer
+    // Unmap the buffer
     result_buffer.unmap();
+
     // Iterate and print the results
     for (index, params) in result_vec.iter().enumerate() {
         println!("Result {}: a = {}, b = {}", index, params.a, params.b);
     }
-    Ok(result_vec.iter().map(|params| params.a).collect())
 
+    Ok(result_vec.iter().map(|params| params.a).collect())
 }
