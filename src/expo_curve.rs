@@ -45,6 +45,8 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     )
     .await
     .unwrap();
+
+    device.start_capture();
     // 1. Load the shader
     // Load the precompiled SPIR-V binary
     let cs_spirv = include_bytes!("testshader.spv");
@@ -148,7 +150,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         module: &cs_module,
         entry_point: "main",
     });
-    
 
     // Copy from the GPU output buffer to the result buffer
     {
@@ -186,11 +187,8 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     let mapped_range = result_slice.get_mapped_range();
     println!("Data: {:?}", mapped_range.iter().map(|&byte| format!("{:02X}", byte)).collect::<Vec<_>>());
     let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
-
     // Iterate and print the results
-    for (index, params) in result_vec.iter().enumerate() {
-        println!("Result {}: a = {}, b = {}", index, params.a, params.b);
-    }
+    device.stop_capture();
     // Drop the mapped view explicitly
     drop(mapped_range);
     // Unmap the buffer after processing
