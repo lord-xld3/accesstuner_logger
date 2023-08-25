@@ -1,6 +1,7 @@
 // Import necessary modules and libraries
 mod data;
 mod csv_out;
+mod expo_curve;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -9,6 +10,7 @@ use std::{
 };
 use data::{F32, LogData, LogField};
 use csv_out::write_to_csv;
+use expo_curve::run;
 
 /// Main function for the program.
 ///
@@ -19,7 +21,8 @@ use csv_out::write_to_csv;
 /// 4. Combining and correcting the extracted data.
 /// 5. Deduplicating the X and Y values for curve fitting.
 /// 6. Exporting the pre-corrected and post-corrected data to separate CSV files.
-fn main() -> io::Result<()> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     // Open and read the CSV file
     let log = fs::File::open("./data/log1.csv").map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
@@ -106,30 +109,10 @@ fn main() -> io::Result<()> {
     // Export the deduplicated data for further analysis
     write_to_csv("pre-correction.csv", &deduplicated_x, &deduplicated_y)?;
 
-    // Placeholder logic for curve fitting - this will be replaced with actual curve fitting logic in future iterations
-    let a_opt = 1.0;
-    let b_opt = 1.0;
-    let c_opt = 1.0;
-
-    // Compute the Y values using the curve fitting parameters
-    let y_fit: Vec<f32> = deduplicated_x.iter().map(|&x_val| a_opt * (-b_opt * x_val).exp() + c_opt).collect();
+    // Call the run function to get the corrected y data
+    let y_fit = run(&deduplicated_x, &deduplicated_y).await?;
 
     // Export the fitted data for comparison
     write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;
     Ok(())
-}
-
-/// A placeholder function for curve fitting.
-///
-/// # Arguments
-/// * `x_data`: A slice of `f32` values representing the x data points.
-/// * `y_data`: A slice of `f32` values representing the y data points.
-///
-/// # Returns
-/// A tuple of three `f32` values representing the optimized parameters of the curve.
-///
-/// # Note
-/// This is a stub and needs to be implemented with actual curve fitting logic.
-fn curve_fit(x_data: &[f32], y_data: &[f32]) -> (f32, f32, f32) {
-    (1.0, 1.0, 1.0)
 }
