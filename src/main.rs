@@ -110,7 +110,9 @@ async fn main() -> io::Result<()> {
     write_to_csv("pre-correction.csv", &deduplicated_x, &deduplicated_y)?;
 
     // Call the run function to get the corrected y data
+    println!("Starting curve fitting");
     let y_fit = run(&deduplicated_x, &deduplicated_y).await?;
+    println!("Curve fitting completed");
 
     // Export the fitted data for comparison
     write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;

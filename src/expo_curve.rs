@@ -60,8 +60,11 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         })
     };
 
-
     let point_data: Vec<Point> = x_data.iter().zip(y_data).map(|(&x, &y)| Point { x, y }).collect();
+    println!("Printing input data before sending to shader:");
+    for point in &point_data {
+        println!("x: {}, y: {}", point.x, point.y);
+    }
     let points_buffer = device.create_buffer_init(&BufferInitDescriptor {
         label: Some("Points Buffer"),
         contents: cast_slice(&point_data),
@@ -161,30 +164,40 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
             pass.dispatch_workgroups(point_data.len() as u32, 1, 1);
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &result_buffer, 0, result_buffer.size());
+        println!("About to submit compute encoder");
         queue.submit(Some(encoder.finish()));
+        println!("Compute encoder submitted");
     }
     
     // Map the result buffer and read the results
     let result_slice = result_buffer.slice(..);
 
     // Use a channel to wait for the buffer mapping to complete
+    println!("Waiting for buffer mapping");
     let (tx, rx) = std::sync::mpsc::channel();
-
     result_slice.map_async(wgpu::MapMode::Read, move |result| {
+        println!("Inside map_async callback");
         match result {
-            Ok(()) => tx.send(Ok(())).unwrap(),
+            Ok(()) => {
+                println!("Mapping successful");
+                tx.send(Ok(())).unwrap()
+            },
             Err(e) => {
                 eprintln!("Buffer mapping error: {:?}", e);
                 tx.send(Err(e)).unwrap();
             }
         }
     });
+    device.poll(wgpu::Maintain::Wait);
 
     // Wait for the buffer mapping to complete
     let mapping_result = rx.recv().expect("Failed to receive buffer mapping result");
     if let Err(e) = mapping_result {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e)));
     }
+
+    println!("Buffer mapping completed");
+
 
     // Limit the scope of result_data
     let result_vec = {
@@ -195,7 +208,10 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
 
     // Now that result_data is out of scope, unmap the buffer
     result_buffer.unmap();
-
+    // Iterate and print the results
+    for (index, params) in result_vec.iter().enumerate() {
+        println!("Result {}: a = {}, b = {}", index, params.a, params.b);
+    }
     Ok(result_vec.iter().map(|params| params.a).collect())
 
 }
