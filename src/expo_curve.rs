@@ -47,7 +47,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     .unwrap();
     // 1. Load the shader
     // Load the precompiled SPIR-V binary
-    let cs_spirv = include_bytes!("shader.spv");
+    let cs_spirv = include_bytes!("testshader.spv");
 
     // Convert the SPIR-V binary for wgpu
     let cs_data = wgpu::util::make_spirv_raw(cs_spirv);
@@ -168,7 +168,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         queue.submit(Some(encoder.finish()));
         println!("Compute encoder submitted");
     }
-    
+
     // Map the result buffer and read the results
     let result_slice = result_buffer.slice(..);
 
@@ -177,33 +177,23 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     result_slice.map_async(wgpu::MapMode::Read, move |result| {
         println!("Inside map_async callback");
-        match result {
-            Ok(()) => {
-                println!("Mapping successful");
-                tx.send(result).unwrap();
-            },
-            Err(e) => {
-                eprintln!("Buffer mapping error: {:?}", e);
-                tx.send(Err(e)).unwrap();
-            }
-        }
+        tx.send(result).unwrap();
     });
     device.poll(wgpu::Maintain::Wait);
     rx.receive().await.unwrap().unwrap();
 
-    let mapped_range = result_slice.get_mapped_range();
-    println!("Data: {:?}", mapped_range);
-
     // Process the mapped data
+    let mapped_range = result_slice.get_mapped_range();
+    println!("Data: {:?}", mapped_range.iter().map(|&byte| format!("{:02X}", byte)).collect::<Vec<_>>());
     let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
-
-    // Unmap the buffer
-    result_buffer.unmap();
 
     // Iterate and print the results
     for (index, params) in result_vec.iter().enumerate() {
         println!("Result {}: a = {}, b = {}", index, params.a, params.b);
     }
-
+    // Drop the mapped view explicitly
+    drop(mapped_range);
+    // Unmap the buffer after processing
+    result_buffer.unmap();
     Ok(result_vec.iter().map(|params| params.a).collect())
 }

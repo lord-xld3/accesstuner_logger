@@ -20,10 +20,10 @@ cbuffer Constants : register(b0) {
 
 [numthreads(1, 1, 1)]
 void main(uint3 dtID : SV_DispatchThreadID) {
-    // Set hardcoded values
+    // Hard-coded values for curve parameters
     CurveParams params;
-    params.a = 1.23;
-    params.b = 4.56;
+    params.a = 2.0;  // Example value for 'a'
+    params.b = 0.5;  // Example value for 'b'
 
     // Write to output buffer
     outputData[0] = params;
