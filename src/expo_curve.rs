@@ -1,11 +1,7 @@
-use std::{
-    io,
-    env,
-};
-use wgpu::{
-    util::{DeviceExt, BufferInitDescriptor},
-};
+use std::{io, env};
+use wgpu::util::{DeviceExt, BufferInitDescriptor};
 use bytemuck::{cast_slice, Pod, Zeroable};
+use naga;
 
 // Ensure Point and CurveParams are 'bytemuck' compatible
 #[repr(C)]
@@ -20,7 +16,15 @@ struct Point {
 struct CurveParams {
     a: f32,
     b: f32,
+    sum_X: f32,
+    sumY: f32,
+    sumX2: f32,
+    sumXY: f32,
+    numerator_b: f32,
+    denominator_b: f32,
+    lnA: f32,
 }
+
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     env::set_var("RUST_BACKTRACE", "1");
@@ -36,31 +40,30 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         })
         .await
         .unwrap();
-    let (device, queue) = adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            features: wgpu::Features::SPIRV_SHADER_PASSTHROUGH,
-            ..Default::default()
-        },
-        None,
-    )
-    .await
-    .unwrap();
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: None,
+                features: wgpu::Features::default(),
+                // WebGL doesn't support all of wgpu's features, so if
+                // we're building for the web we'll have to disable some.
+                limits: wgpu::Limits::default(),
+            },
+            None, // Trace path
+        )
+        .await
+        .unwrap();
 
     device.start_capture();
     // 1. Load the shader
-    // Load the precompiled SPIR-V binary
-    let cs_spirv = include_bytes!("testshader.spv");
-
-    // Convert the SPIR-V binary for wgpu
-    let cs_data = wgpu::util::make_spirv_raw(cs_spirv);
-
-    // Create a shader module
-    let cs_module = unsafe {
-        device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
-            label: Some("Compute Shader"),
-            source: cs_data,
-        })
-    };
+    let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Compute Shader"),
+        source: wgpu::ShaderSource::Glsl {
+            shader: include_str!("shader.comp").into(),
+            stage: naga::ShaderStage::Compute, // Replace Vertex with the appropriate shader stage
+            defines: naga::FastHashMap::default(), // Optionally, provide any shader defines
+        },
+    });
 
     let point_data: Vec<Point> = x_data.iter().zip(y_data).map(|(&x, &y)| Point { x, y }).collect();
     println!("Printing input data before sending to shader:");
@@ -88,6 +91,12 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         mapped_at_creation: false,
     });
 
+    let constants_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("Constants Buffer"),
+        contents: cast_slice(&[point_data.len() as u32]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
     // Create a bind group layout and bind group
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
@@ -95,7 +104,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Point>() as _),
                 },
@@ -110,10 +119,20 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                     min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
                 },
                 count: None,
+            },            
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<u32>() as _),
+                },
+                count: None,
             },
         ],
         label: Some("bind_group_layout"),
-    });    
+    });      
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         entries: &[
@@ -133,10 +152,17 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                     size: wgpu::BufferSize::new((point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress),
                 }),
             },
-            // ... Add other binding resources as needed ...
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &constants_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<u32>() as _),
+                }),
+            },
         ],
         label: Some("bind_group"),
-    });    
+    });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Compute Pipeline Layout"),
@@ -162,7 +188,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(point_data.len() as u32, 1, 1);
+            pass.dispatch_workgroups(1, 1, 1);
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &result_buffer, 0, result_buffer.size());
         println!("About to submit compute encoder");
@@ -185,13 +211,18 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
 
     // Process the mapped data
     let mapped_range = result_slice.get_mapped_range();
-    println!("Data: {:?}", mapped_range.iter().map(|&byte| format!("{:02X}", byte)).collect::<Vec<_>>());
     let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
-    // Iterate and print the results
-    device.stop_capture();
     // Drop the mapped view explicitly
     drop(mapped_range);
     // Unmap the buffer after processing
     result_buffer.unmap();
+
+    // Print the results
+    for params in &result_vec {
+        println!("a: {}, b: {}", params.a, params.b);
+    }
+
+    device.stop_capture();
     Ok(result_vec.iter().map(|params| params.a).collect())
+
 }

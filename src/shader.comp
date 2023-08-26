@@ -1,0 +1,72 @@
+#version 450
+
+// Define the buffer structure
+struct Point {
+    float x;
+    float y;
+};
+
+// Define the output structure
+struct CurveParams {
+    float a;
+    float b;
+    float sumX;
+    float sumY;
+    float sumX2;
+    float sumXY;
+    float numerator_b;
+    float denominator_b;
+    float lnA;
+};
+
+// Buffers
+layout(set = 0, binding = 0) buffer InputData {
+    Point inputData[];
+};
+layout(set = 0, binding = 1) buffer OutputData {
+    CurveParams outputData;
+};
+layout(set = 0, binding = 2) uniform Constants {
+    uint n;  // Number of data points in the inputData buffer
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+void main() {
+    uint dtID = gl_GlobalInvocationID.x;
+    float sumX = 0;
+    float sumY = 0;
+    float sumX2 = 0;
+    float sumXY = 0;
+
+    // Compute sums needed for linear regression
+    for (uint i = 0; i < n; ++i) {
+        float x = inputData[i].x;
+        float y = log2(inputData[i].y);  // Convert to log
+
+        sumX += x;
+        sumY += y;
+        sumX2 += x * x;
+        sumXY += x * y;
+    }
+
+    // Compute linear regression coefficients
+    float numerator_b = n * sumXY - sumX * sumY;
+    float denominator_b = n * sumX2 - sumX * sumX;
+    float b = numerator_b / denominator_b;
+    float lnA = (sumY - b * sumX) / float(n);
+
+    // Extract curve parameters
+    CurveParams params;
+    params.a = exp2(lnA);
+    params.b = b;
+    params.sumX = sumX;
+    params.sumY = sumY;
+    params.sumX2 = sumX2;
+    params.sumXY = sumXY;
+    params.numerator_b = numerator_b;
+    params.denominator_b = denominator_b;
+    params.lnA = lnA;
+
+    // Write to output buffer
+    outputData = params;
+}
