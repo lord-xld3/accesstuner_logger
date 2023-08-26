@@ -16,15 +16,7 @@ struct Point {
 struct CurveParams {
     a: f32,
     b: f32,
-    sum_X: f32,
-    sumY: f32,
-    sumX2: f32,
-    sumXY: f32,
-    numerator_b: f32,
-    denominator_b: f32,
-    lnA: f32,
 }
-
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     env::set_var("RUST_BACKTRACE", "1");
@@ -60,41 +52,45 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         label: Some("Compute Shader"),
         source: wgpu::ShaderSource::Glsl {
             shader: include_str!("shader.comp").into(),
-            stage: naga::ShaderStage::Compute, // Replace Vertex with the appropriate shader stage
-            defines: naga::FastHashMap::default(), // Optionally, provide any shader defines
+            stage: naga::ShaderStage::Compute,
+            defines: naga::FastHashMap::default(),
         },
     });
 
-    let point_data: Vec<Point> = x_data.iter().zip(y_data).map(|(&x, &y)| Point { x, y }).collect();
-    println!("Printing input data before sending to shader:");
-    for point in &point_data {
-        println!("x: {}, y: {}", point.x, point.y);
-    }
-    let points_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("Points Buffer"),
-        contents: cast_slice(&point_data),
+    println!("x_data: {:?}", x_data);
+    println!("y_data: {:?}", y_data);
+
+    // Create buffers for the input data
+    let x_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("X Buffer"),
+        contents: cast_slice(x_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let y_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("Y Buffer"),
+        contents: cast_slice(y_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let n_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("N Buffer"),
+        contents: cast_slice(&[x_data.len() as i32]),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
-    // Create a buffer to copy the results to
+    // Create a buffer to hold the output CurveParams
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Result Buffer"),
-        size: (point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Output Buffer"),
-        size: (point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress,
+        size: std::mem::size_of::<CurveParams>() as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
 
-    let constants_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("Constants Buffer"),
-        contents: cast_slice(&[point_data.len() as u32]),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    // Create a buffer to read the results from the GPU
+    let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Read Buffer"),
+        size: std::mem::size_of::<CurveParams>() as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
 
     // Create a bind group layout and bind group
@@ -106,7 +102,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Point>() as _),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
                 },
                 count: None,
             },
@@ -116,48 +112,67 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
                 },
                 count: None,
-            },            
+            },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<u32>() as _),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<i32>() as _),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
                 },
                 count: None,
             },
         ],
         label: Some("bind_group_layout"),
-    });      
+    });
+
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &points_buffer,
+                    buffer: &x_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of_val(&point_data) as _),
+                    size: wgpu::BufferSize::new(std::mem::size_of_val(x_data) as _),
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &output_buffer,
+                    buffer: &y_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new((point_data.len() * std::mem::size_of::<CurveParams>()) as wgpu::BufferAddress),
+                    size: wgpu::BufferSize::new(std::mem::size_of_val(y_data) as _),
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &constants_buffer,
+                    buffer: &n_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<u32>() as _),
+                    size: wgpu::BufferSize::new(std::mem::size_of::<i32>() as _),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &result_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
                 }),
             },
         ],
@@ -177,7 +192,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         entry_point: "main",
     });
 
-    // Copy from the GPU output buffer to the result buffer
     {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Compute Encoder"),
@@ -190,14 +204,15 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&output_buffer, 0, &result_buffer, 0, result_buffer.size());
+        // Copy the result from the result buffer to the read buffer
+        encoder.copy_buffer_to_buffer(&result_buffer, 0, &read_buffer, 0, read_buffer.size());
         println!("About to submit compute encoder");
         queue.submit(Some(encoder.finish()));
         println!("Compute encoder submitted");
     }
 
-    // Map the result buffer and read the results
-    let result_slice = result_buffer.slice(..);
+    // Map the read buffer and read the results
+    let result_slice = read_buffer.slice(..);
 
     // Use a channel to wait for the buffer mapping to complete
     println!("Waiting for buffer mapping");
@@ -214,8 +229,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
     // Drop the mapped view explicitly
     drop(mapped_range);
-    // Unmap the buffer after processing
-    result_buffer.unmap();
 
     // Print the results
     for params in &result_vec {

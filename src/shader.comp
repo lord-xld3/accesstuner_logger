@@ -1,72 +1,37 @@
 #version 450
 
-// Define the buffer structure
-struct Point {
-    float x;
-    float y;
-};
+// Input data as storage buffers
+layout(set = 0, binding = 0) buffer XBuffer { float x[]; };
+layout(set = 0, binding = 1) buffer YBuffer { float y[]; };
+layout(set = 0, binding = 2) buffer NBuffer { int n; };
 
-// Define the output structure
-struct CurveParams {
-    float a;
-    float b;
-    float sumX;
-    float sumY;
-    float sumX2;
-    float sumXY;
-    float numerator_b;
-    float denominator_b;
-    float lnA;
-};
+// Output data as storage buffer
+layout(set = 0, binding = 3) buffer OutputBuffer { float a; float b; };
 
-// Buffers
-layout(set = 0, binding = 0) buffer InputData {
-    Point inputData[];
-};
-layout(set = 0, binding = 1) buffer OutputData {
-    CurveParams outputData;
-};
-layout(set = 0, binding = 2) uniform Constants {
-    uint n;  // Number of data points in the inputData buffer
-};
-
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main() {
-    uint dtID = gl_GlobalInvocationID.x;
-    float sumX = 0;
-    float sumY = 0;
-    float sumX2 = 0;
-    float sumXY = 0;
-
-    // Compute sums needed for linear regression
-    for (uint i = 0; i < n; ++i) {
-        float x = inputData[i].x;
-        float y = log2(inputData[i].y);  // Convert to log
-
-        sumX += x;
-        sumY += y;
-        sumX2 += x * x;
-        sumXY += x * y;
+    float sum_x = 0.0;
+    float sum_y = 0.0;
+    float sum_xy = 0.0;
+    float sum_x2 = 0.0;
+    
+    for (int i = 0; i < n; i++) {
+        float xi = x[i];
+        float yi = y[i];
+        
+        sum_x += xi;
+        sum_y += log(yi);
+        sum_xy += xi * log(yi);
+        sum_x2 += xi * xi;
     }
-
-    // Compute linear regression coefficients
-    float numerator_b = n * sumXY - sumX * sumY;
-    float denominator_b = n * sumX2 - sumX * sumX;
-    float b = numerator_b / denominator_b;
-    float lnA = (sumY - b * sumX) / float(n);
-
-    // Extract curve parameters
-    CurveParams params;
-    params.a = exp2(lnA);
-    params.b = b;
-    params.sumX = sumX;
-    params.sumY = sumY;
-    params.sumX2 = sumX2;
-    params.sumXY = sumXY;
-    params.numerator_b = numerator_b;
-    params.denominator_b = denominator_b;
-    params.lnA = lnA;
-
-    // Write to output buffer
-    outputData = params;
+    
+    float mean_x = sum_x / float(n);
+    float mean_y = sum_y / float(n);
+    float mean_xy = sum_xy / float(n);
+    float mean_x2 = sum_x2 / float(n);
+    
+    float m = (mean_x * mean_y - mean_xy) / (mean_x * mean_x - mean_x2);
+    float c = mean_y - m * mean_x;
+    
+    a = exp(c);
+    b = m;
 }
