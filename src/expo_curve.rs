@@ -3,8 +3,14 @@ use wgpu::util::{DeviceExt, BufferInitDescriptor};
 use bytemuck::cast_slice;
 use naga;
 
+struct Range {
+    min: f32,
+    max: f32,
+}
+
 const PRECISION: u32 = 4096;
-const RANGE: f32 = 8.0;
+const RANGE_A: Range = Range { min: 0.0, max: 16.0 };
+const RANGE_N: Range = Range { min: 0.0, max: 16.0 };
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -55,7 +61,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
         contents: cast_slice(y_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    
     // Create a buffer to hold the results
     let results_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Results Buffer"),
@@ -63,7 +68,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-
     // Create a buffer to read the results from the GPU
     let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Read Buffer"),
@@ -71,15 +75,18 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-
-    let increment_data = [RANGE / PRECISION as f32, PRECISION as f32];
+    // Create the increment_data array
+    let increment_data = [
+        RANGE_A.min, RANGE_A.max,
+        RANGE_N.min, RANGE_N.max,
+        PRECISION as f32
+    ];
+    // Create the increment_buffer
     let increment_buffer = device.create_buffer_init(&BufferInitDescriptor {
         label: Some("Increment Buffer"),
         contents: bytemuck::cast_slice(&increment_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
-
-
     // Create a bind group layout and bind group
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[
@@ -119,7 +126,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 2) as _),
+                    min_binding_size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 5) as _),
                 },
                 count: None,
             },            
@@ -159,7 +166,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &increment_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 2) as _),
+                    size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 5) as _),
                 }),
             },            
         ],
@@ -218,17 +225,18 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     let mut best_a = 0.0;
     let mut best_n = 0.0;
 
-    let increment = RANGE / PRECISION as f32;
+    let increment_a = (RANGE_A.max - RANGE_A.min) / (PRECISION as f32 - 1.0);
+    let increment_n = (RANGE_N.max - RANGE_N.min) / (PRECISION as f32 - 1.0);
 
     // Linear search: Find the best_a and best_n with the lowest mse
-    for (index, mse) in result_vec.iter().enumerate() {
+    for (index, &mse) in result_vec.iter().enumerate() {
         let i = index / PRECISION as usize;
         let j = index % PRECISION as usize;
-        let a = i as f32 * increment;
-        let n = j as f32 * increment;
+        let a = RANGE_A.min + j as f32 * increment_a;
+        let n = RANGE_N.min + i as f32 * increment_n;
 
-        if *mse < min_mse {
-            min_mse = *mse;
+        if mse < min_mse {
+            min_mse = mse;
             best_a = a;
             best_n = n;
         }

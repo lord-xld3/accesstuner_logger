@@ -13,14 +13,19 @@ layout(set = 0, binding = 2) buffer ResultBuffer {
 };
 
 layout(set = 0, binding = 3) readonly buffer IncrementBuffer {
-    float increment;
+    float min_a;
+    float max_a;
+    float min_n;
+    float max_n;
     float iterations;
 };
 
 void main() {
     int data_size = x_data.length();
-    float a = 0.0 + increment * float(gl_GlobalInvocationID.x);
-    float n = 0.0 + increment * float(gl_GlobalInvocationID.y);
+    float increment_a = (max_a - min_a) / iterations;
+    float increment_n = (max_n - min_n) / iterations;
+    float a = min_a + increment_a * float(gl_GlobalInvocationID.x);
+    float n = min_n + increment_n * float(gl_GlobalInvocationID.y);
     float sum_sq_errors = 0.0;
 
     // Iterate over the data
