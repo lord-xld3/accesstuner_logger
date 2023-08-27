@@ -100,8 +100,6 @@ async fn main() -> io::Result<()> {
 
         // Deduplicate X and Y values in preparation for curve fitting
         let mut seen_xy = HashSet::new();
-        let mut deduplicated_x = Vec::new();
-        let mut deduplicated_y = Vec::new();
 
         // Combine STFT and LTFT values to compute the combined fuel trim correction factor
         let ft_combine: Vec<f32> = log_data.get(&LogField::STFT).unwrap().iter().zip(log_data.get(&LogField::LTFT).unwrap())
