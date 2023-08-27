@@ -1,37 +1,37 @@
 #version 450
 
-// Input data as storage buffers
-layout(set = 0, binding = 0) buffer XBuffer { float x[]; };
-layout(set = 0, binding = 1) buffer YBuffer { float y[]; };
-layout(set = 0, binding = 2) buffer NBuffer { int n; };
+layout(set = 0, binding = 0) buffer XBuffer {
+    float x_data[];
+};
 
-// Output data as storage buffer
-layout(set = 0, binding = 3) buffer OutputBuffer { float a; float b; };
+layout(set = 0, binding = 1) buffer YBuffer {
+    float y_data[];
+};
+
+layout(set = 0, binding = 2) buffer ResultBuffer {
+    float results[];
+};
+
+layout(local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
 
 void main() {
-    float sum_x = 0.0;
-    float sum_y = 0.0;
-    float sum_xy = 0.0;
-    float sum_x2 = 0.0;
-    
-    for (int i = 0; i < n; i++) {
-        float xi = x[i];
-        float yi = y[i];
-        
-        sum_x += xi;
-        sum_y += log(yi);
-        sum_xy += xi * log(yi);
-        sum_x2 += xi * xi;
+    int data_size = x_data.length();
+    float a = 1.62 + 0.01 * int(gl_GlobalInvocationID.x);
+    float n = 3.3 + 0.001 * int(gl_GlobalInvocationID.y);
+    float sum_sq_errors = 0.0;
+
+    // Iterate over the data
+    for (int i = 0; i < data_size; i++) {
+        float x = x_data[i];
+        float y_observed = y_data[i];
+        float y_predicted = a * pow(x, n);
+        float error = y_observed - y_predicted;
+        sum_sq_errors += error * error;
     }
-    
-    float mean_x = sum_x / float(n);
-    float mean_y = sum_y / float(n);
-    float mean_xy = sum_xy / float(n);
-    float mean_x2 = sum_x2 / float(n);
-    
-    float m = (mean_x * mean_y - mean_xy) / (mean_x * mean_x - mean_x2);
-    float c = mean_y - m * mean_x;
-    
-    a = exp(c);
-    b = m;
+
+    float mse = sum_sq_errors / float(data_size);
+
+    // Write the MSE to the result buffer
+    int index = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_WorkGroupSize.x);
+    results[index] = mse;
 }

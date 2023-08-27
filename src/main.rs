@@ -111,8 +111,13 @@ async fn main() -> io::Result<()> {
 
     // Call the run function to get the corrected y data
     println!("Starting curve fitting");
-    let y_fit = run(&deduplicated_x, &deduplicated_y).await?;
+    let (best_a, best_n, min_mse) = run(&deduplicated_x, &deduplicated_y).await?;
     println!("Curve fitting completed");
+
+    // Compute the fitted y values using the optimized parameters
+    let y_fit: Vec<f32> = deduplicated_x.iter()
+        .map(|&x| best_a * x.powf(best_n))
+        .collect();
 
     // Export the fitted data for comparison
     write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;

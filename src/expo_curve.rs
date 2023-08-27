@@ -13,13 +13,16 @@ struct Point {
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct CurveParams {
-    a: f32,
-    b: f32,
+pub struct CurveParams {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
 }
 
-pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
+pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> {
     env::set_var("RUST_BACKTRACE", "1");
+    println!("x_data: {:?}", x_data);
+    println!("y_data: {:?}", y_data);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         dx12_shader_compiler: Default::default(),
@@ -57,9 +60,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         },
     });
 
-    println!("x_data: {:?}", x_data);
-    println!("y_data: {:?}", y_data);
-
     // Create buffers for the input data
     let x_buffer = device.create_buffer_init(&BufferInitDescriptor {
         label: Some("X Buffer"),
@@ -71,16 +71,11 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
         contents: cast_slice(y_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let n_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("N Buffer"),
-        contents: cast_slice(&[x_data.len() as i32]),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    // Create a buffer to hold the output CurveParams
-    let result_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Result Buffer"),
-        size: std::mem::size_of::<CurveParams>() as wgpu::BufferAddress,
+    
+    // Create a buffer to hold the results
+    let results_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Results Buffer"),
+        size: (10000 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -88,7 +83,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
     // Create a buffer to read the results from the GPU
     let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Read Buffer"),
-        size: std::mem::size_of::<CurveParams>() as wgpu::BufferAddress,
+        size: (10000 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -122,17 +117,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<i32>() as _),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
+                    min_binding_size: wgpu::BufferSize::new((10000 * std::mem::size_of::<f32>()) as _),
                 },
                 count: None,
             },
@@ -162,17 +147,9 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &n_buffer,
+                    buffer: &results_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<i32>() as _),
-                }),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &result_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of::<CurveParams>() as _),
+                    size: wgpu::BufferSize::new((10000 * std::mem::size_of::<f32>()) as _),
                 }),
             },
         ],
@@ -202,10 +179,10 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
+            pass.dispatch_workgroups(100, 100, 1);
         }
         // Copy the result from the result buffer to the read buffer
-        encoder.copy_buffer_to_buffer(&result_buffer, 0, &read_buffer, 0, read_buffer.size());
+        encoder.copy_buffer_to_buffer(&results_buffer, 0, &read_buffer, 0, read_buffer.size());
         println!("About to submit compute encoder");
         queue.submit(Some(encoder.finish()));
         println!("Compute encoder submitted");
@@ -226,16 +203,38 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<Vec<f32>> {
 
     // Process the mapped data
     let mapped_range = result_slice.get_mapped_range();
-    let result_vec: Vec<CurveParams> = bytemuck::cast_slice(&mapped_range).to_vec();
+    let result_vec: Vec<f32> = bytemuck::cast_slice(&mapped_range).to_vec();
     // Drop the mapped view explicitly
     drop(mapped_range);
 
-    // Print the results
-    for params in &result_vec {
-        println!("a: {}, b: {}", params.a, params.b);
+    // Find the minimum MSE and the corresponding a and n
+    let mut min_mse = 1e20;
+    let mut best_a = 0.0;
+    let mut best_n = 0.0;
+
+    // Find the best_a with the lowest MSE
+    for i in 0..100 {
+        let mse = result_vec[i];
+        let a = 1.62 + 0.01 * i as f32;
+        if mse < min_mse {
+            min_mse = mse;
+            best_a = a;
+        }
     }
 
-    device.stop_capture();
-    Ok(result_vec.iter().map(|params| params.a).collect())
+    // Find the best_n with the best_a and lowest MSE
+    min_mse = 1e20;
+    for i in 0..100 {
+        let index = i * 100 + best_a as usize;
+        let mse = result_vec[index];
+        let n = 3.3 + 0.001 * i as f32;
+        if mse < min_mse {
+            min_mse = mse;
+            best_n = n;
+        }
+    }
 
+    println!("Optimized Coefficient (a): {}, Optimized Exponent (n): {}, Minimum Mean Squared Error (MSE): {}", best_a, best_n, min_mse);
+    device.stop_capture();
+    Ok((best_a, best_n, min_mse))
 }
