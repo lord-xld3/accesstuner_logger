@@ -1,15 +1,12 @@
-use std::{io, env};
+use std::io;
 use wgpu::util::{DeviceExt, BufferInitDescriptor};
-use bytemuck::{cast_slice, Pod, Zeroable};
+use bytemuck::cast_slice;
 use naga;
 
-const PRECISION: u32 = 64;
-const RANGE: f32 = 4.0;
+const PRECISION: u32 = 4096;
+const RANGE: f32 = 8.0;
 
-pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> {
-    env::set_var("RUST_BACKTRACE", "1");
-    println!("x_data: {:?}", x_data);
-    println!("y_data: {:?}", y_data);
+pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         dx12_shader_compiler: Default::default(),
@@ -196,19 +193,15 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
         }
         // Copy the result from the result buffer to the read buffer
         encoder.copy_buffer_to_buffer(&results_buffer, 0, &read_buffer, 0, read_buffer.size());
-        println!("About to submit compute encoder");
         queue.submit(Some(encoder.finish()));
-        println!("Compute encoder submitted");
     }
 
     // Map the read buffer and read the results
     let result_slice = read_buffer.slice(..);
 
     // Use a channel to wait for the buffer mapping to complete
-    println!("Waiting for buffer mapping");
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     result_slice.map_async(wgpu::MapMode::Read, move |result| {
-        println!("Inside map_async callback");
         tx.send(result).unwrap();
     });
     device.poll(wgpu::Maintain::Wait);
@@ -239,10 +232,9 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
             best_a = a;
             best_n = n;
         }
-        println!("Index={}, i={}, j={}, a={}, n={}, mse={}, min_mse={}, best_a={}, best_n={}", index, i, j, a, n, mse, min_mse, best_a, best_n);
     }
 
     println!("Optimized Coefficient (a): {}, Optimized Exponent (n): {}, Minimum Mean Squared Error (MSE): {}", best_a, best_n, min_mse);
     device.stop_capture();
-    Ok((best_a, best_n, min_mse))
+    Ok((best_a, best_n))
 }

@@ -17,4 +17,5 @@ tokio = { version = "1", features = ["full"] }
 futures-intrusive = "0.4"
 bytemuck = { version = "1.13.1", features = ["derive"] }
 naga = "0.13.0"
+time = "0.3.28"
 

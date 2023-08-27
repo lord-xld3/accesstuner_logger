@@ -11,6 +11,7 @@ use std::{
 use data::{F32, LogData, LogField};
 use csv_out::write_to_csv;
 use expo_curve::run;
+use time::Instant;
 
 /// Main function for the program.
 ///
@@ -24,6 +25,7 @@ use expo_curve::run;
 #[tokio::main]
 async fn main() -> io::Result<()> {
     // Open and read the CSV file
+    let start = Instant::now();
     let log = fs::File::open("./data/log1.csv").map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             io::Error::new(e.kind(), "CSV log file not found. Ensure the path is correct and the file exists.")
@@ -111,8 +113,7 @@ async fn main() -> io::Result<()> {
 
     // Call the run function to get the corrected y data
     println!("Starting curve fitting");
-    let (best_a, best_n, min_mse) = run(&deduplicated_x, &deduplicated_y).await?;
-    println!("Curve fitting completed");
+    let (best_a, best_n) = run(&deduplicated_x, &deduplicated_y).await?;
 
     // Compute the fitted y values using the optimized parameters
     let y_fit: Vec<f32> = deduplicated_x.iter()
@@ -121,5 +122,7 @@ async fn main() -> io::Result<()> {
 
     // Export the fitted data for comparison
     write_to_csv("post-correction.csv", &deduplicated_x, &y_fit)?;
+    let duration = start.elapsed();
+    println!("Time elapsed: {:?}", duration);
     Ok(())
 }
