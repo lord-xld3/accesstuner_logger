@@ -3,21 +3,8 @@ use wgpu::util::{DeviceExt, BufferInitDescriptor};
 use bytemuck::{cast_slice, Pod, Zeroable};
 use naga;
 
-// Ensure Point and CurveParams are 'bytemuck' compatible
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct Point {
-    x: f32,
-    y: f32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct CurveParams {
-    pub a: f32,
-    pub b: f32,
-    pub c: f32,
-}
+const PRECISION: u32 = 64;
+const RANGE: f32 = 4.0;
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> {
     env::set_var("RUST_BACKTRACE", "1");
@@ -75,7 +62,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
     // Create a buffer to hold the results
     let results_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Results Buffer"),
-        size: (10000 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        size: (PRECISION as usize * PRECISION as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -83,10 +70,18 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
     // Create a buffer to read the results from the GPU
     let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Read Buffer"),
-        size: (10000 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        size: (PRECISION as usize * PRECISION as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
+
+    let increment_data = [RANGE / PRECISION as f32, PRECISION as f32];
+    let increment_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("Increment Buffer"),
+        contents: bytemuck::cast_slice(&increment_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
 
     // Create a bind group layout and bind group
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -95,7 +90,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
                 },
@@ -105,7 +100,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
                 },
@@ -117,10 +112,20 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((10000 * std::mem::size_of::<f32>()) as _),
+                    min_binding_size: wgpu::BufferSize::new((PRECISION as u64 * PRECISION as u64 * std::mem::size_of::<f32>() as u64) as _),
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 2) as _),
+                },
+                count: None,
+            },            
         ],
         label: Some("bind_group_layout"),
     });
@@ -149,9 +154,17 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &results_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new((10000 * std::mem::size_of::<f32>()) as _),
+                    size: wgpu::BufferSize::new(((PRECISION * PRECISION) as usize * std::mem::size_of::<f32>()) as _),
                 }),
             },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &increment_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 2) as _),
+                }),
+            },            
         ],
         label: Some("bind_group"),
     });
@@ -179,7 +192,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(100, 100, 1);
+            pass.dispatch_workgroups(PRECISION, PRECISION, 1);
         }
         // Copy the result from the result buffer to the read buffer
         encoder.copy_buffer_to_buffer(&results_buffer, 0, &read_buffer, 0, read_buffer.size());
@@ -208,30 +221,25 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32, f32)> 
     drop(mapped_range);
 
     // Find the minimum MSE and the corresponding a and n
-    let mut min_mse = 1e20;
+    let mut min_mse = f32::MAX;
     let mut best_a = 0.0;
     let mut best_n = 0.0;
 
-    // Find the best_a with the lowest MSE
-    for i in 0..100 {
-        let mse = result_vec[i];
-        let a = 1.62 + 0.01 * i as f32;
-        if mse < min_mse {
-            min_mse = mse;
-            best_a = a;
-        }
-    }
+    let increment = RANGE / PRECISION as f32;
 
-    // Find the best_n with the best_a and lowest MSE
-    min_mse = 1e20;
-    for i in 0..100 {
-        let index = i * 100 + best_a as usize;
-        let mse = result_vec[index];
-        let n = 3.3 + 0.001 * i as f32;
-        if mse < min_mse {
-            min_mse = mse;
+    // Linear search: Find the best_a and best_n with the lowest mse
+    for (index, mse) in result_vec.iter().enumerate() {
+        let i = index / PRECISION as usize;
+        let j = index % PRECISION as usize;
+        let a = i as f32 * increment;
+        let n = j as f32 * increment;
+
+        if *mse < min_mse {
+            min_mse = *mse;
+            best_a = a;
             best_n = n;
         }
+        println!("Index={}, i={}, j={}, a={}, n={}, mse={}, min_mse={}, best_a={}, best_n={}", index, i, j, a, n, mse, min_mse, best_a, best_n);
     }
 
     println!("Optimized Coefficient (a): {}, Optimized Exponent (n): {}, Minimum Mean Squared Error (MSE): {}", best_a, best_n, min_mse);

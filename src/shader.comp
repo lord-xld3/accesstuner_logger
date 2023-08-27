@@ -1,10 +1,10 @@
 #version 450
 
-layout(set = 0, binding = 0) buffer XBuffer {
+layout(set = 0, binding = 0) readonly buffer XBuffer {
     float x_data[];
 };
 
-layout(set = 0, binding = 1) buffer YBuffer {
+layout(set = 0, binding = 1) readonly buffer YBuffer {
     float y_data[];
 };
 
@@ -12,12 +12,15 @@ layout(set = 0, binding = 2) buffer ResultBuffer {
     float results[];
 };
 
-layout(local_size_x = 10, local_size_y = 10, local_size_z = 1) in;
+layout(set = 0, binding = 3) readonly buffer IncrementBuffer {
+    float increment;
+    float iterations;
+};
 
 void main() {
     int data_size = x_data.length();
-    float a = 1.62 + 0.01 * int(gl_GlobalInvocationID.x);
-    float n = 3.3 + 0.001 * int(gl_GlobalInvocationID.y);
+    float a = 0.0 + increment * float(gl_GlobalInvocationID.x);
+    float n = 0.0 + increment * float(gl_GlobalInvocationID.y);
     float sum_sq_errors = 0.0;
 
     // Iterate over the data
@@ -32,6 +35,6 @@ void main() {
     float mse = sum_sq_errors / float(data_size);
 
     // Write the MSE to the result buffer
-    int index = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_WorkGroupSize.x);
+    int index = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * int(iterations);
     results[index] = mse;
 }
