@@ -8,11 +8,11 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, BufReader},
     path::Path,
+    time::Instant,
 };
 use data::{F32, LogData, LogField};
 use csv_out::write_to_csv;
 use expo_curve::run;
-use time::Instant;
 
 /// Main function for the program.
 ///
@@ -143,4 +143,37 @@ fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where P: AsRef<Path>, {
     let file = File::open(filename)?;
     Ok(io::BufReader::new(file).lines())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+    use rand::Rng;
+
+    #[tokio::test]
+    async fn test_run() {
+        let num_trials = 100;
+        let mut total_duration = 0;
+        let mut min_duration = u128::MAX;
+        let mut max_duration = u128::MIN;
+
+        // Generate some example data
+        let mut rng = rand::thread_rng();
+        let deduplicated_x: Vec<f32> = (0..100).map(|_| rng.gen_range(0.0..100.0)).collect();
+        let deduplicated_y: Vec<f32> = (0..100).map(|_| rng.gen_range(0.0..100.0)).collect();
+
+        for _ in 0..num_trials {
+            let start = Instant::now();
+            let _ = run(&deduplicated_x, &deduplicated_y).await.unwrap();
+            let duration = start.elapsed().as_millis();
+            total_duration += duration;
+            min_duration = min_duration.min(duration);
+            max_duration = max_duration.max(duration);
+            println!("Trial duration: {} ms", duration);
+        }
+
+        let mean_duration = total_duration / num_trials;
+        println!("Minimum duration: {} ms, Mean duration: {} ms, Maximum duration: {} ms", min_duration, mean_duration, max_duration);
+    }
 }
