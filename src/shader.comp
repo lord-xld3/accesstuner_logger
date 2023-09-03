@@ -1,113 +1,48 @@
-#version 450 core
-// This shader is used to find the best 'a' and 'n' parameters for the power law function
-// y = a * x^n
-// that best fits the given data points.
-// The shader uses a genetic algorithm to find the best parameters.
-// Each thread represents a single chromosome in the population.
+#version 450
+
+#define FLT_MAX 3.402823466e+38
+#define FLT_MIN 1.175494351e-38
+
+const uint POPULATION_SIZE = 16;
+const uint MAX_GENERATIONS = 8;
+const float TOLERANCE = 0.1;
+const float XOVER_RATE = 0.7;
+const float MUTATION_RATE = 0.1;
+
 layout(set = 0, binding = 0) readonly buffer XYBuffer {
     vec2 xy_data[];
 };
 
 layout(set = 0, binding = 1) buffer ResultBuffer {
-    float best_a;
-    float best_n;
+    float opt_a;
+    float opt_n;
 };
 
-layout(set = 0, binding = 2) readonly buffer ConstBuffer {
-    uint POPULATION_SIZE;
-    uint TOURNAMENT_SIZE;
-    uint MAX_GENERATIONS;
-    float MUTATION_RATE;
-    float MUTATION_RANGE;
-    float MIN_A;
-    float MAX_A;
-    float MIN_N;
-    float MAX_N;
-};
-
-layout(set = 0, binding = 3) buffer FitnessBuffer {
-    float fitness[];
-};
-
-layout(std430, set = 0, binding = 4) buffer PopBuffer {
-    vec2 population[];
-};
-
-// Pseudo-random number generator
-float rand(float min, float max) {
-    float random = fract(sin(dot(vec2(gl_GlobalInvocationID.xy), vec2(12.9898, 78.233))) * 43758.5453);
-    return mix(min, max, random);
-}
-
-// Tournament selection function
-vec2 tournamentSelection() {
-    uint bestIndex = uint(rand(0, POPULATION_SIZE));
-    float bestFitness = fitness[bestIndex];
-    for (uint i = 1; i < TOURNAMENT_SIZE; i++) {
-        uint randomIndex = uint(rand(0, POPULATION_SIZE));
-        float randomFitness = fitness[randomIndex];
-        if (randomFitness > bestFitness) {
-            bestIndex = randomIndex;
-            bestFitness = randomFitness;
-        }
-    }
-    return population[bestIndex];
-}
-
-// Mutation function
-vec2 mutate(vec2 chromosome, float mutationRate, float mutationRange) {
-    if (rand(0.0, 1.0) < mutationRate) {
-        // Apply a small random change to 'a' and 'n'
-        chromosome.x += rand(-mutationRange, mutationRange);
-        chromosome.y += rand(-mutationRange, mutationRange);
-    }
-    return chromosome;
-}
-
-// Function to calculate fitness (inverse of MSE)
-float evaluateFitness(vec2 chromosome) {
-    float sum_sq_errors = 0.0;
-    for (int i = 0; i < xy_data.length(); i++) {
-        float x = xy_data[i].x;
-        float y_observed = xy_data[i].y;
-        float y_predicted = chromosome.x * pow(x, chromosome.y);
-        float error = y_observed - y_predicted;
-        sum_sq_errors += error * error;
-    }
-    return 1.0 / (1.0 + sum_sq_errors / float(xy_data.length()));
+// Random number generator
+uint xorshift32(uint state) {
+    uint x = state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
 }
 
 void main() {
-    int datasize = xy_data.length();
-    // Initialization: Initialize the population with random values
+    // Initialize population
+    vec2 population[POPULATION_SIZE];
+    uint state = uint(gl_GlobalInvocationID.x); // Use thread ID as seed
+
+    // Bounds for both parameters [min_a, max_a, min_n, max_n]
+    vec4 bounds = vec4(FLT_MIN, FLT_MAX, FLT_MIN, FLT_MAX);
+
+    // Randomize each parameter of population within bounds
     for (uint i = 0; i < POPULATION_SIZE; i++) {
-        population[i] = vec2(rand(MIN_A, MAX_A), rand(MIN_N, MAX_N));
+        population[i].x = mix(bounds.x, bounds.y, float(xorshift32(state)) / float(0xFFFFFFFFu)); // Randomize a within bounds
+        population[i].y = mix(bounds.z, bounds.w, float(xorshift32(state)) / float(0xFFFFFFFFu)); // Randomize n within bounds
+        state = xorshift32(state); // Update seed for next parameter
     }
-    vec2 bestvec2 = population[0];
-    for (uint generation = 0; generation < MAX_GENERATIONS; generation++) {
-        // Evaluate fitness for each vec2 and store in the fitness buffer
-        float bestFitness = -1.0;
-        for (uint i = 0; i < POPULATION_SIZE; i++) {
-            fitness[i] = evaluateFitness(population[i]);
-            if (fitness[i] > bestFitness) {
-                bestFitness = fitness[i];
-                bestvec2 = population[i];
-            }
-        }
-        // Create a new population through crossover and mutation
-        for (uint i = 0; i < POPULATION_SIZE; i++) {
-            vec2 parent1 = tournamentSelection();
-            vec2 parent2 = tournamentSelection();
-            vec2 child = parent1;  // Use parent1 as the child
 
-            // Apply mutation to the child
-            child = mutate(child, MUTATION_RATE, MUTATION_RANGE);
-
-            // Update the population in place
-            population[i] = child;
-        }
-    }
-    // Write the best 'a' and 'n' parameters to the result buffer
-    best_a = bestvec2.x;
-    best_n = bestvec2.y;
+    // Return some population parameters to the result buffer for testing
+    opt_a = population[0].x;
+    opt_n = population[0].y;
 }

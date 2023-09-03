@@ -159,9 +159,12 @@ mod tests {
         let mut max_duration = u128::MIN;
 
         // Generate some example data
+        let a = 2.34;
+        let n = 4.10;
         let mut rng = rand::thread_rng();
         let deduplicated_x: Vec<f32> = (0..1024).map(|_| rng.gen_range(0.0..100.0)).collect();
-        let deduplicated_y: Vec<f32> = (0..1024).map(|_| rng.gen_range(0.0..100.0)).collect();
+        let deduplicated_y: Vec<f32> = deduplicated_x.iter().map(|&x| a * x.powf(n)).collect();
+
 
         for _ in 0..num_trials {
             let start = Instant::now();

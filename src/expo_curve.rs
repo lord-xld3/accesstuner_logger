@@ -1,25 +1,8 @@
 use std::io;
 use wgpu::util::{DeviceExt, BufferInitDescriptor};
-use bytemuck::cast_slice;
 use naga;
 
-struct Range {
-    min: f32,
-    max: f32,
-}
-
-const PRECISION: u32 = 4096;
-const POPULATION_SIZE: u32 = 100; // example value
-const TOURNAMENT_SIZE: u32 = 10;  // example value
-const MAX_GENERATIONS: u32 = 1000; // example value
-const MUTATION_RATE: f32 = 0.01; // example value
-const MUTATION_RANGE: f32 = 0.1; // example value
-const RANGE_A: Range = Range { min: 0.0, max: 16.0 };
-const RANGE_N: Range = Range { min: 0.0, max: 16.0 };
-const MIN_A: f32 = RANGE_A.min;
-const MAX_A: f32 = RANGE_A.max;
-const MIN_N: f32 = RANGE_N.min;
-const MAX_N: f32 = RANGE_N.max;
+const THREADS: u32 = 4096;
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -58,7 +41,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
             defines: naga::FastHashMap::default(),
         },
     });
-
     // Input buffer
     let xy_data: Vec<[f32; 2]> = x_data.iter().zip(y_data.iter()).map(|(&x, &y)| [x, y]).collect();
     let xy_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -71,37 +53,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
         label: Some("Results Buffer"),
         size: (2 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    // Constants buffer
-    let const_data = [
-        POPULATION_SIZE as f32,
-        TOURNAMENT_SIZE as f32,
-        MAX_GENERATIONS as f32,
-        MUTATION_RATE,
-        MUTATION_RANGE,
-        MIN_A,
-        MAX_A,
-        MIN_N,
-        MAX_N,
-    ];
-    let const_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("Const Buffer"),
-        contents: bytemuck::cast_slice(&const_data),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    // Fitness buffer
-    let fitness_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Fitness Buffer"),
-        size: (POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: false,
-    });
-    // Population buffer
-    let pop_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Pop Buffer"),
-        size: ((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
-        usage: wgpu::BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
     // Create a buffer to read the results from the GPU
@@ -134,36 +85,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((const_data.len() * std::mem::size_of::<f32>()) as _),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as _),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as _),
-                },
-                count: None,
-            },
         ],
         label: Some("bind_group_layout"),
     });
@@ -185,30 +106,6 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                     buffer: &results_buffer,
                     offset: 0,
                     size: wgpu::BufferSize::new((2 * std::mem::size_of::<f32>()) as _), // float best_a; float best_n;
-                }),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &const_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new((const_data.len() * std::mem::size_of::<f32>()) as _),
-                }),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &fitness_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new((POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as _),
-                }),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &pop_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as _),
                 }),
             },
         ],
@@ -238,7 +135,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(PRECISION, PRECISION, 1);
+            pass.dispatch_workgroups(THREADS, THREADS, 1);
         }
         // Copy the result from the result buffer to the read buffer
         encoder.copy_buffer_to_buffer(&results_buffer, 0, &read_buffer, 0, read_buffer.size());
