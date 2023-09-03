@@ -1,0 +1,45 @@
+#version 450
+
+layout(set = 0, binding = 0) readonly buffer XBuffer {
+    float x_data[];
+};
+
+layout(set = 0, binding = 1) readonly buffer YBuffer {
+    float y_data[];
+};
+
+layout(set = 0, binding = 2) buffer ResultBuffer {
+    float results[];
+};
+
+layout(set = 0, binding = 3) readonly buffer IncrementBuffer {
+    float min_a;
+    float max_a;
+    float min_n;
+    float max_n;
+    float iterations;
+};
+
+void main() {
+    int data_size = x_data.length();
+    float increment_a = (max_a - min_a) / iterations;
+    float increment_n = (max_n - min_n) / iterations;
+    float a = min_a + increment_a * float(gl_GlobalInvocationID.x);
+    float n = min_n + increment_n * float(gl_GlobalInvocationID.y);
+    float sum_sq_errors = 0.0;
+
+    // Iterate over the data
+    for (int i = 0; i < data_size; i++) {
+        float x = x_data[i];
+        float y_observed = y_data[i];
+        float y_predicted = a * pow(x, n);
+        float error = y_observed - y_predicted;
+        sum_sq_errors += error * error;
+    }
+
+    float mse = sum_sq_errors / float(data_size);
+
+    // Write the MSE to the result buffer
+    int index = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * int(iterations);
+    results[index] = mse;
+}

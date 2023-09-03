@@ -9,8 +9,17 @@ struct Range {
 }
 
 const PRECISION: u32 = 4096;
+const POPULATION_SIZE: u32 = 100; // example value
+const TOURNAMENT_SIZE: u32 = 10;  // example value
+const MAX_GENERATIONS: u32 = 1000; // example value
+const MUTATION_RATE: f32 = 0.01; // example value
+const MUTATION_RANGE: f32 = 0.1; // example value
 const RANGE_A: Range = Range { min: 0.0, max: 16.0 };
 const RANGE_N: Range = Range { min: 0.0, max: 16.0 };
+const MIN_A: f32 = RANGE_A.min;
+const MAX_A: f32 = RANGE_A.max;
+const MIN_N: f32 = RANGE_N.min;
+const MAX_N: f32 = RANGE_N.max;
 
 pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -50,42 +59,57 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
         },
     });
 
-    // Create buffers for the input data
-    let x_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("X Buffer"),
-        contents: cast_slice(x_data),
+    // Input buffer
+    let xy_data: Vec<[f32; 2]> = x_data.iter().zip(y_data.iter()).map(|(&x, &y)| [x, y]).collect();
+    let xy_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("XY Buffer"),
+        contents: bytemuck::cast_slice(&xy_data),
         usage: wgpu::BufferUsages::STORAGE,
     });
-    let y_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("Y Buffer"),
-        contents: cast_slice(y_data),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    // Create a buffer to hold the results
+    // Output buffer
     let results_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Results Buffer"),
-        size: (PRECISION as usize * PRECISION as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        size: (2 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    // Constants buffer
+    let const_data = [
+        POPULATION_SIZE as f32,
+        TOURNAMENT_SIZE as f32,
+        MAX_GENERATIONS as f32,
+        MUTATION_RATE,
+        MUTATION_RANGE,
+        MIN_A,
+        MAX_A,
+        MIN_N,
+        MAX_N,
+    ];
+    let const_buffer = device.create_buffer_init(&BufferInitDescriptor {
+        label: Some("Const Buffer"),
+        contents: bytemuck::cast_slice(&const_data),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    // Fitness buffer
+    let fitness_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Fitness Buffer"),
+        size: (POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    // Population buffer
+    let pop_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Pop Buffer"),
+        size: ((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
     // Create a buffer to read the results from the GPU
     let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Read Buffer"),
-        size: (PRECISION as usize * PRECISION as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+        size: (2 * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    });
-    // Create the increment_data array
-    let increment_data = [
-        RANGE_A.min, RANGE_A.max,
-        RANGE_N.min, RANGE_N.max,
-        PRECISION as f32
-    ];
-    // Create the increment_buffer
-    let increment_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: Some("Increment Buffer"),
-        contents: bytemuck::cast_slice(&increment_data),
-        usage: wgpu::BufferUsages::STORAGE,
     });
     // Create a bind group layout and bind group
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -96,7 +120,7 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
+                    min_binding_size: wgpu::BufferSize::new((x_data.len() * 2 * std::mem::size_of::<f32>()) as _), // vec2 xy_data[]; 2 f32 values for each vec2
                 },
                 count: None,
             },
@@ -104,9 +128,9 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<f32>() as _),
+                    min_binding_size: wgpu::BufferSize::new((2 * std::mem::size_of::<f32>()) as _), // float best_a; float best_n;
                 },
                 count: None,
             },
@@ -114,9 +138,9 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((PRECISION as u64 * PRECISION as u64 * std::mem::size_of::<f32>() as u64) as _),
+                    min_binding_size: wgpu::BufferSize::new((const_data.len() * std::mem::size_of::<f32>()) as _),
                 },
                 count: None,
             },
@@ -124,54 +148,72 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
                 binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 5) as _),
+                    min_binding_size: wgpu::BufferSize::new((POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as _),
                 },
                 count: None,
-            },            
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as _),
+                },
+                count: None,
+            },
         ],
         label: Some("bind_group_layout"),
     });
-
+    
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &x_buffer,
+                    buffer: &xy_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of_val(x_data) as _),
+                    size: wgpu::BufferSize::new((x_data.len() * 2 * std::mem::size_of::<f32>()) as _), // vec2 xy_data[]; 2 f32 values for each vec2
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &y_buffer,
+                    buffer: &results_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(std::mem::size_of_val(y_data) as _),
+                    size: wgpu::BufferSize::new((2 * std::mem::size_of::<f32>()) as _), // float best_a; float best_n;
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &results_buffer,
+                    buffer: &const_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new(((PRECISION * PRECISION) as usize * std::mem::size_of::<f32>()) as _),
+                    size: wgpu::BufferSize::new((const_data.len() * std::mem::size_of::<f32>()) as _),
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &increment_buffer,
+                    buffer: &fitness_buffer,
                     offset: 0,
-                    size: wgpu::BufferSize::new((std::mem::size_of::<f32>() * 5) as _),
+                    size: wgpu::BufferSize::new((POPULATION_SIZE as usize * std::mem::size_of::<f32>()) as _),
                 }),
-            },            
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &pop_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(((POPULATION_SIZE * 2) as usize * std::mem::size_of::<f32>()) as _),
+                }),
+            },
         ],
         label: Some("bind_group"),
-    });
+    });    
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Compute Pipeline Layout"),
@@ -214,35 +256,17 @@ pub async fn run(x_data: &[f32], y_data: &[f32]) -> io::Result<(f32, f32)> {
     device.poll(wgpu::Maintain::Wait);
     rx.receive().await.unwrap().unwrap();
 
-    // Process the mapped data
+    // Get the mapped range and read the results
     let mapped_range = result_slice.get_mapped_range();
-    let result_vec: Vec<f32> = bytemuck::cast_slice(&mapped_range).to_vec();
+    let result_data: &[f32] = bytemuck::cast_slice(&mapped_range);
+
+    let best_a = result_data[0];
+    let best_n = result_data[1];
+
     // Drop the mapped view explicitly
     drop(mapped_range);
 
-    // Find the minimum MSE and the corresponding a and n
-    let mut min_mse = f32::MAX;
-    let mut best_a = 0.0;
-    let mut best_n = 0.0;
-
-    let increment_a = (RANGE_A.max - RANGE_A.min) / (PRECISION as f32 - 1.0);
-    let increment_n = (RANGE_N.max - RANGE_N.min) / (PRECISION as f32 - 1.0);
-
-    // Linear search: Find the best_a and best_n with the lowest mse
-    for (index, &mse) in result_vec.iter().enumerate() {
-        let i = index / PRECISION as usize;
-        let j = index % PRECISION as usize;
-        let a = RANGE_A.min + j as f32 * increment_a;
-        let n = RANGE_N.min + i as f32 * increment_n;
-
-        if mse < min_mse {
-            min_mse = mse;
-            best_a = a;
-            best_n = n;
-        }
-    }
-
-    println!("Optimized Coefficient (a): {}, Optimized Exponent (n): {}, Minimum Mean Squared Error (MSE): {}", best_a, best_n, min_mse);
+    println!("Optimized Coefficient (a): {}, Optimized Exponent (n): {}", best_a, best_n);
     device.stop_capture();
     Ok((best_a, best_n))
 }

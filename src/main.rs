@@ -160,8 +160,8 @@ mod tests {
 
         // Generate some example data
         let mut rng = rand::thread_rng();
-        let deduplicated_x: Vec<f32> = (0..100).map(|_| rng.gen_range(0.0..100.0)).collect();
-        let deduplicated_y: Vec<f32> = (0..100).map(|_| rng.gen_range(0.0..100.0)).collect();
+        let deduplicated_x: Vec<f32> = (0..1024).map(|_| rng.gen_range(0.0..100.0)).collect();
+        let deduplicated_y: Vec<f32> = (0..1024).map(|_| rng.gen_range(0.0..100.0)).collect();
 
         for _ in 0..num_trials {
             let start = Instant::now();
